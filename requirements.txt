@@ -1,0 +1,9 @@
+opencv-python
+ipykernel
+numpy==2.4.6
+pandas
+ultralytics
+face-recognition
+insightface
+onnxruntime
+torch
