@@ -1,42 +1,21 @@
-import importlib.util
 import os
 import urllib.request
 
-import numpy as np
 from insightface.app import FaceAnalysis
 
 from config import (
     DEFAULT_YOLO_MODEL,
     DEFAULT_YOLO_MODEL_URL,
-    EMBEDDINGS_FILE,
     EMBEDDER_DETECTION_SIZE,
     EMBEDDER_DETECTION_THRESHOLD,
-    FACE_RECOGNITION_FILE,
     MODEL_NAME,
     YOLO_MODEL_FOLDER,
 )
-
-
-def get_execution_providers():
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        return ["CPUExecutionProvider"]
-
-    available = set(ort.get_available_providers())
-    preferred = [
-        "CoreMLExecutionProvider",
-        "CUDAExecutionProvider",
-        "CPUExecutionProvider",
-    ]
-
-    providers = [
-        provider
-        for provider in preferred
-        if provider in available
-    ]
-
-    return providers or ["CPUExecutionProvider"]
+from recognition.embedding_cache import (
+    load_face_recognition_module,
+    load_known_embeddings,
+)
+from runtime_utils import get_execution_providers
 
 
 def get_torch_device():
@@ -68,50 +47,6 @@ def create_embedder_app():
     )
 
     return app
-
-
-def load_face_recognition_module():
-    spec = importlib.util.spec_from_file_location(
-        "face_recognition_cache",
-        FACE_RECOGNITION_FILE,
-    )
-
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load: {FACE_RECOGNITION_FILE}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    return module
-
-
-def load_known_embeddings(rebuild=False):
-    helper = load_face_recognition_module()
-
-    if (
-        not rebuild
-        and os.path.exists(EMBEDDINGS_FILE)
-        and not helper.database_needs_rebuild()
-    ):
-        data = np.load(EMBEDDINGS_FILE, allow_pickle=False)
-        embeddings = data["embeddings"].astype(np.float32)
-        names = data["names"].astype(str).tolist()
-
-        print(f"Loaded {len(embeddings)} cached embeddings")
-
-        return embeddings, names
-
-    app = helper.create_app(
-        (640, 640),
-        det_thresh=0.35,
-    )
-
-    embeddings, names, _ = helper.load_embeddings(
-        app,
-        rebuild=True,
-    )
-
-    return embeddings, names
 
 
 def ensure_yolo_model(model_path, allow_download=True):

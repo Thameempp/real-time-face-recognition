@@ -1,6 +1,7 @@
 import os
 
 import cv2
+from config import MODEL_NAME
 
 
 PROJECT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,14 +15,13 @@ CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 60
 
-MODEL_NAME = "buffalo_s"
 LIVE_INFERENCE_WIDTH = 960
 LIVE_DETECTION_SIZE = (640, 640)
 LIVE_DETECTION_THRESHOLD = 0.35
 
 FACE_PADDING_MIN = 60
 FACE_PADDING_RATIO = 0.35
-MIN_FACE_CROP_SIZE = 320
+MIN_CAPTURE_FACE_SIZE = 96
 SAVE_COOLDOWN_SECONDS = 0.5
 MAX_SAVE_RESULT_AGE_SECONDS = 1.0
 RECENT_FRAME_LIMIT = 12
@@ -38,10 +38,6 @@ FOLDER_NAMES = [
     "dark",
     "bright",
     "shadow",
-    "grayscale",
-    "edges",
-    "outline",
-    "pattern",
 ]
 
 POSE_KEYS = {

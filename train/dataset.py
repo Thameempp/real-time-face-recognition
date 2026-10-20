@@ -26,13 +26,17 @@ def create_person_folders(person_name):
 
 def find_next_count(folder):
     """Continue numbering without overwriting old photos."""
-    image_files = [
-        filename
-        for filename in os.listdir(folder)
-        if filename.lower().endswith(IMAGE_EXTENSIONS)
-    ]
+    highest_count = 0
 
-    return len(image_files) + 1
+    for filename in os.listdir(folder):
+        if not filename.lower().endswith(IMAGE_EXTENSIONS):
+            continue
+
+        suffix = os.path.splitext(filename)[0].rsplit("_", 1)[-1]
+        if suffix.isdigit():
+            highest_count = max(highest_count, int(suffix))
+
+    return highest_count + 1
 
 
 def save_image(path, image):
@@ -51,6 +55,7 @@ def save_face_forms(
 ):
     """Create and save every face variation."""
     image_name = f"{person_name}_{pose_name}_{image_count:03d}.jpg"
+    all_saved = True
 
     for form_name, generated_image in create_face_forms(face_image).items():
         image_path = os.path.join(folders[form_name], image_name)
@@ -58,5 +63,11 @@ def save_face_forms(
 
         if not saved:
             print(f"Could not save: {image_path}")
+            all_saved = False
 
-    print(f"Saved {pose_name} image set: {image_count}")
+    if all_saved:
+        print(f"Saved {pose_name} image set: {image_count}")
+    else:
+        print(f"Image set incomplete: {pose_name} {image_count}")
+
+    return all_saved

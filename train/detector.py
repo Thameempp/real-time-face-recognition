@@ -4,36 +4,17 @@ from multiprocessing import shared_memory
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
+from recognition.recognizer import assess_face_quality
 
 from .config import (
+    MIN_CAPTURE_FACE_SIZE,
     LIVE_DETECTION_SIZE,
     LIVE_DETECTION_THRESHOLD,
     MODEL_NAME,
 )
 from .face_processing import face_to_result, resize_for_inference
 from .utils import put_latest
-
-
-def get_execution_providers():
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        return ["CPUExecutionProvider"]
-
-    available = set(ort.get_available_providers())
-    preferred = [
-        "CoreMLExecutionProvider",
-        "CUDAExecutionProvider",
-        "CPUExecutionProvider",
-    ]
-
-    providers = [
-        provider
-        for provider in preferred
-        if provider in available
-    ]
-
-    return providers or ["CPUExecutionProvider"]
+from runtime_utils import get_execution_providers
 
 
 def create_app():
@@ -95,6 +76,12 @@ def detection_worker(
                 face_to_result(face, scale_x, scale_y, frame_id)
                 for face in faces
             ]
+            for result in results:
+                result["quality"] = assess_face_quality(
+                    frame,
+                    result["bbox"],
+                    min_face_size=MIN_CAPTURE_FACE_SIZE,
+                )
 
             processed_count += 1
             now = time.perf_counter()

@@ -1,11 +1,18 @@
 import argparse
+import math
 import multiprocessing as mp
 
 import cv2
 
-from camera import run_camera
-from config import DEFAULT_YOLO_MODEL, YOLO_CONFIDENCE, YOLO_IMAGE_SIZE
-from model_utils import (
+from recognition.camera import run_camera
+from config import (
+    DEFAULT_YOLO_MODEL,
+    MATCHING_STRATEGY,
+    SIMILARITY_THRESHOLD,
+    YOLO_CONFIDENCE,
+    YOLO_IMAGE_SIZE,
+)
+from recognition.model_utils import (
     ensure_yolo_model,
     get_torch_device,
     load_known_embeddings,
@@ -46,14 +53,26 @@ def parse_args():
         help="YOLO device, for example cpu, mps, or cuda.",
     )
     parser.add_argument(
+        "--matching-strategy",
+        choices=("top3", "max"),
+        default=MATCHING_STRATEGY,
+        help="Compare each identity using its top-three mean or maximum score.",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=SIMILARITY_THRESHOLD,
+        help="Minimum identity similarity score to accept a match.",
+    )
+    parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Rebuild the InsightFace embedding cache first.",
+        help="Rebuild the embedding cache and exit without opening the camera.",
     )
     parser.add_argument(
         "--build-only",
         action="store_true",
-        help="Only verify/rebuild embeddings, then exit.",
+        help="Validate the embedding cache and exit; use --rebuild to regenerate it.",
     )
     parser.add_argument(
         "--no-download",
@@ -67,6 +86,13 @@ def parse_args():
 def main():
     args = parse_args()
 
+    if not math.isfinite(args.threshold) or not -1.0 <= args.threshold <= 1.0:
+        raise ValueError("--threshold must be a finite value between -1 and 1")
+    if not math.isfinite(args.conf) or not 0.0 <= args.conf <= 1.0:
+        raise ValueError("--conf must be a finite value between 0 and 1")
+    if args.imgsz <= 0:
+        raise ValueError("--imgsz must be greater than zero")
+
     known_embeddings, known_names = load_known_embeddings(
         rebuild=args.rebuild
     )
@@ -74,12 +100,13 @@ def main():
     print(f"Total embeddings: {len(known_embeddings)}")
     print(f"Total people: {len(set(known_names))}")
 
-    if args.build_only:
+    if args.build_only or args.rebuild:
         return
 
     if len(known_embeddings) == 0:
         raise RuntimeError(
-            "No embeddings found. Run train.py, then rebuild embeddings."
+            "No embeddings found. Collect images with `python -m train`, "
+            "then rebuild embeddings."
         )
 
     yolo_model_path = ensure_yolo_model(
@@ -98,6 +125,8 @@ def main():
         args.imgsz,
         args.conf,
         yolo_device,
+        args.matching_strategy,
+        args.threshold,
     )
 
 

@@ -224,3 +224,8 @@ trained_data/
 trained_data
 /trained_data
 /Users/thameem/Desktop/face_recognition_proj/trained_data/
+.DS_Store
+
+# embeddings
+face_embeddings.npz
+face_embeddings_manifest.json

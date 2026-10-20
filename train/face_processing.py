@@ -5,7 +5,6 @@ from .config import (
     FACE_PADDING_MIN,
     FACE_PADDING_RATIO,
     LIVE_INFERENCE_WIDTH,
-    MIN_FACE_CROP_SIZE,
 )
 
 
@@ -70,22 +69,3 @@ def crop_face(frame, bbox):
     y2 = min(frame_height, y2 + padding_y)
 
     return frame[y1:y2, x1:x2]
-
-
-def upscale_small_face(face_image):
-    """Keep far-face crops usable for later embedding extraction."""
-    height, width = face_image.shape[:2]
-    min_side = min(height, width)
-
-    if min_side <= 0 or min_side >= MIN_FACE_CROP_SIZE:
-        return face_image
-
-    scale = MIN_FACE_CROP_SIZE / min_side
-
-    return cv2.resize(
-        face_image,
-        None,
-        fx=scale,
-        fy=scale,
-        interpolation=cv2.INTER_CUBIC,
-    )

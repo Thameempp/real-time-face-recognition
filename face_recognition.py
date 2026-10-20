@@ -1,9 +1,38 @@
+import hashlib
+import importlib.metadata
+import inspect
 import json
 import os
 
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
+from recognition.recognizer import (
+    assess_face_quality,
+    embed_crops,
+    get_best_face,
+    normalize_embedding,
+)
+from runtime_utils import get_execution_providers
+from train.augmentations import (
+    create_bright_version,
+    create_dark_version,
+    create_shadow_version,
+    improve_lighting,
+)
+from config import (
+    EMBEDDING_DETECTION_SIZE,
+    EMBEDDING_DETECTION_THRESHOLD,
+    EMBEDDING_DIMENSION,
+    EMBEDDING_FOLDERS,
+    ENROLLMENT_FACE_MIN_SIZE,
+    FACE_BLUR_THRESHOLD,
+    FACE_FRAME_EDGE_MARGIN,
+    FACE_MAX_OUTSIDE_RATIO,
+    MAX_FACE_ASPECT_RATIO,
+    MIN_FACE_ASPECT_RATIO,
+    MODEL_NAME,
+)
 
 
 BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
@@ -16,40 +45,15 @@ EMBEDDINGS_FILE = os.path.join(BASE_FOLDER, "face_embeddings.npz")
 MANIFEST_FILE = os.path.join(BASE_FOLDER, "face_embeddings_manifest.json")
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
-MODEL_NAME = "buffalo_s"
 SOURCE_FOLDER = "originals"
-EMBEDDING_FOLDERS = (
-    "originals",
-    "corrected",
-    "dark",
-    "bright",
-    "shadow",
-)
+CACHE_SCHEMA_VERSION = 2
+AUGMENTATION_VERSION = 1
 
 
-def get_execution_providers():
-    try:
-        import onnxruntime as ort
-    except ImportError:
-        return ["CPUExecutionProvider"]
-
-    available = set(ort.get_available_providers())
-    preferred = [
-        "CoreMLExecutionProvider",
-        "CUDAExecutionProvider",
-        "CPUExecutionProvider",
-    ]
-
-    providers = [
-        provider
-        for provider in preferred
-        if provider in available
-    ]
-
-    return providers or ["CPUExecutionProvider"]
-
-
-def create_app(det_size, det_thresh=0.5):
+def create_app(
+    det_size=EMBEDDING_DETECTION_SIZE,
+    det_thresh=EMBEDDING_DETECTION_THRESHOLD,
+):
     app = FaceAnalysis(
         name=MODEL_NAME,
         providers=get_execution_providers(),
@@ -64,51 +68,6 @@ def create_app(det_size, det_thresh=0.5):
     return app
 
 
-def normalize_embedding(embedding):
-    embedding = np.asarray(embedding, dtype=np.float32)
-    norm = np.linalg.norm(embedding)
-
-    if norm == 0:
-        return embedding
-
-    return embedding / norm
-
-
-def improve_lighting(image):
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    lightness, channel_a, channel_b = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8),
-    )
-    improved = clahe.apply(lightness)
-
-    merged = cv2.merge((improved, channel_a, channel_b))
-
-    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
-
-
-def create_dark_version(image):
-    return cv2.convertScaleAbs(image, alpha=0.55, beta=-25)
-
-
-def create_bright_version(image):
-    return cv2.convertScaleAbs(image, alpha=1.20, beta=35)
-
-
-def create_shadow_version(image):
-    height, width = image.shape[:2]
-    gradient = np.linspace(0.35, 1.0, width, dtype=np.float32)
-    shadow_mask = np.tile(gradient, (height, 1))
-    shadow_mask = cv2.GaussianBlur(shadow_mask, (51, 51), 0)
-
-    shadow_image = image.astype(np.float32)
-    shadow_image *= shadow_mask[:, :, np.newaxis]
-
-    return np.clip(shadow_image, 0, 255).astype(np.uint8)
-
-
 def get_transformed_images(image):
     return {
         "corrected": improve_lighting(image),
@@ -116,20 +75,6 @@ def get_transformed_images(image):
         "bright": create_bright_version(image),
         "shadow": create_shadow_version(image),
     }
-
-
-def get_best_face(faces):
-    if not faces:
-        return None
-
-    return max(
-        faces,
-        key=lambda face: (
-            face.bbox[2] - face.bbox[0]
-        ) * (
-            face.bbox[3] - face.bbox[1]
-        ),
-    )
 
 
 def iter_people():
@@ -152,7 +97,58 @@ def iter_images(folder):
             yield os.path.join(folder, filename)
 
 
-def make_manifest():
+def _runtime_manifest(embedding_dimension=EMBEDDING_DIMENSION):
+    try:
+        insightface_version = importlib.metadata.version("insightface")
+    except importlib.metadata.PackageNotFoundError:
+        insightface_version = "unknown"
+
+    preprocessing_functions = (
+        create_app,
+        get_transformed_images,
+        transform_training_images,
+        build_embeddings,
+        create_bright_version,
+        create_dark_version,
+        create_shadow_version,
+        improve_lighting,
+        assess_face_quality,
+        embed_crops,
+        get_best_face,
+        normalize_embedding,
+    )
+    preprocessing_source = "\n".join(
+        inspect.getsource(function) for function in preprocessing_functions
+    )
+    preprocessing_fingerprint = hashlib.sha256(
+        preprocessing_source.encode("utf-8")
+    ).hexdigest()
+
+    return {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "model": MODEL_NAME,
+        "model_version": insightface_version,
+        "embedding_dimension": embedding_dimension,
+        "preprocessing": {
+            "detection_size": list(EMBEDDING_DETECTION_SIZE),
+            "detection_threshold": EMBEDDING_DETECTION_THRESHOLD,
+            "alignment": "InsightFace FaceAnalysis.get landmark alignment",
+            "embedding_folders": list(EMBEDDING_FOLDERS),
+            "augmentation_version": AUGMENTATION_VERSION,
+            "code_fingerprint": preprocessing_fingerprint,
+            "quality": {
+                "minimum_face_size": ENROLLMENT_FACE_MIN_SIZE,
+                "blur_threshold": FACE_BLUR_THRESHOLD,
+                "frame_edge_margin": FACE_FRAME_EDGE_MARGIN,
+                "maximum_outside_ratio": FACE_MAX_OUTSIDE_RATIO,
+                "minimum_aspect_ratio": MIN_FACE_ASPECT_RATIO,
+                "maximum_aspect_ratio": MAX_FACE_ASPECT_RATIO,
+            },
+        },
+    }
+
+
+def make_manifest(embedding_dimension=EMBEDDING_DIMENSION):
     files = []
 
     for person_name, person_folder in iter_people():
@@ -164,44 +160,98 @@ def make_manifest():
                 files.append(
                     {
                         "person": person_name,
-                        "path": image_path,
-                        "mtime": stat.st_mtime,
+                        "path": os.path.relpath(image_path, TRAINED_DATA_FOLDER),
+                        "mtime_ns": stat.st_mtime_ns,
                         "size": stat.st_size,
                     }
                 )
 
-    return {
-        "model": MODEL_NAME,
-        "folders": list(EMBEDDING_FOLDERS),
-        "files": files,
-    }
+    canonical_files = json.dumps(
+        files,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    manifest = _runtime_manifest(embedding_dimension)
+    manifest.update(
+        {
+            "dataset_fingerprint": hashlib.sha256(canonical_files).hexdigest(),
+            "files": files,
+        }
+    )
 
-
-def has_training_images():
-    return bool(make_manifest()["files"])
+    return manifest
 
 
 def load_manifest():
     if not os.path.exists(MANIFEST_FILE):
         return None
 
-    with open(MANIFEST_FILE, "r", encoding="utf-8") as file:
-        return json.load(file)
+    try:
+        with open(MANIFEST_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except json.JSONDecodeError:
+        return None
 
 
 def save_manifest(manifest):
-    with open(MANIFEST_FILE, "w", encoding="utf-8") as file:
+    temporary_path = f"{MANIFEST_FILE}.tmp"
+    with open(temporary_path, "w", encoding="utf-8") as file:
         json.dump(manifest, file, indent=2)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary_path, MANIFEST_FILE)
+
+
+def _validate_embedding_cache(manifest):
+    try:
+        with np.load(EMBEDDINGS_FILE, allow_pickle=False) as data:
+            embeddings = np.asarray(data["embeddings"], dtype=np.float32)
+            names = np.asarray(data["names"], dtype=str)
+            paths = np.asarray(data["paths"], dtype=str)
+    except (EOFError, OSError, TypeError, ValueError, KeyError):
+        return False
+
+    if embeddings.ndim != 2 or embeddings.shape[1] != manifest.get(
+        "embedding_dimension"
+    ):
+        return False
+    if (
+        len(embeddings) == 0
+        or len(embeddings) != len(names)
+        or len(embeddings) != len(paths)
+    ):
+        return False
+    if (
+        not np.all(np.isfinite(embeddings))
+        or np.any(names == "")
+        or np.any(paths == "")
+    ):
+        return False
+
+    norms = np.linalg.norm(embeddings, axis=1)
+    return bool(np.all(np.abs(norms - 1.0) <= 1e-3))
 
 
 def database_needs_rebuild():
     if not os.path.exists(EMBEDDINGS_FILE):
         return True
 
-    if not os.path.isdir(TRAINED_DATA_FOLDER) or not has_training_images():
+    manifest = load_manifest()
+    if not isinstance(manifest, dict):
+        return True
+
+    runtime_manifest = _runtime_manifest()
+    if any(manifest.get(key) != value for key, value in runtime_manifest.items()):
+        return True
+
+    if not _validate_embedding_cache(manifest):
+        return True
+
+    # Keep a valid cache usable when a custom training directory is offline.
+    if not os.path.isdir(TRAINED_DATA_FOLDER):
         return False
 
-    return load_manifest() != make_manifest()
+    return manifest != make_manifest(manifest["embedding_dimension"])
 
 
 def transform_training_images():
@@ -210,7 +260,7 @@ def transform_training_images():
             f"Training data folder not found: {TRAINED_DATA_FOLDER}"
         )
 
-    created_count = 0
+    transformed_count = 0
 
     for _, person_folder in iter_people():
         originals_folder = os.path.join(person_folder, SOURCE_FOLDER)
@@ -231,13 +281,12 @@ def transform_training_images():
                 os.makedirs(output_folder, exist_ok=True)
                 output_path = os.path.join(output_folder, filename)
 
-                if os.path.exists(output_path):
-                    continue
-
                 if cv2.imwrite(output_path, transformed):
-                    created_count += 1
+                    transformed_count += 1
+                else:
+                    print(f"Could not write: {output_path}")
 
-    return created_count
+    return transformed_count
 
 
 def build_embeddings(app):
@@ -247,11 +296,29 @@ def build_embeddings(app):
 
     for person_name, person_folder in iter_people():
         loaded_for_person = 0
+        original_paths = list(
+            iter_images(os.path.join(person_folder, SOURCE_FOLDER))
+        )
+        if not original_paths:
+            print(f"No original enrollment images for {person_name}; skipping")
+            continue
+
+        original_names = {
+            os.path.basename(path)
+            for path in original_paths
+            if cv2.imread(path) is not None
+        }
 
         for folder_name in EMBEDDING_FOLDERS:
             image_folder = os.path.join(person_folder, folder_name)
 
             for image_path in iter_images(image_folder):
+                if (
+                    folder_name != SOURCE_FOLDER
+                    and os.path.basename(image_path) not in original_names
+                ):
+                    continue
+
                 image = cv2.imread(image_path)
 
                 if image is None:
@@ -264,10 +331,39 @@ def build_embeddings(app):
                     print(f"No face detected: {image_path}")
                     continue
 
-                embeddings.append(normalize_embedding(face.embedding))
+                quality = assess_face_quality(
+                    image,
+                    face.bbox,
+                    min_face_size=ENROLLMENT_FACE_MIN_SIZE,
+                )
+                if not quality["accepted"]:
+                    print(
+                        f"Poor quality ({quality['reason']}): {image_path}"
+                    )
+                    continue
+
+                normalized_embedding = normalize_embedding(face.embedding)
+                if normalized_embedding.shape != (EMBEDDING_DIMENSION,):
+                    print(f"Unexpected embedding dimension: {image_path}")
+                    continue
+                if not np.isclose(
+                    np.linalg.norm(normalized_embedding),
+                    1.0,
+                    atol=1e-3,
+                ):
+                    print(f"Invalid embedding: {image_path}")
+                    continue
+
+                embeddings.append(normalized_embedding)
                 names.append(person_name)
                 paths.append(image_path)
                 loaded_for_person += 1
+
+        if loaded_for_person == 0:
+            raise RuntimeError(
+                f"No usable embeddings were found for {person_name}; "
+                "check the images or quality thresholds."
+            )
 
         print(f"Loaded {loaded_for_person} embeddings for {person_name}")
 
@@ -277,32 +373,49 @@ def build_embeddings(app):
         )
 
     embeddings = np.asarray(embeddings, dtype=np.float32)
+    if not np.all(np.isfinite(embeddings)):
+        raise RuntimeError("Built embeddings contain non-finite values")
 
-    np.savez_compressed(
-        EMBEDDINGS_FILE,
-        embeddings=embeddings,
-        names=np.asarray(names),
-        paths=np.asarray(paths),
-    )
-    save_manifest(make_manifest())
+    temporary_path = f"{EMBEDDINGS_FILE}.tmp"
+    with open(temporary_path, "wb") as file:
+        np.savez_compressed(
+            file,
+            embeddings=embeddings,
+            names=np.asarray(names),
+            paths=np.asarray(paths),
+        )
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary_path, EMBEDDINGS_FILE)
+    save_manifest(make_manifest(embeddings.shape[1]))
 
     return embeddings, names, paths
 
 
 def load_embeddings(app, rebuild=False):
-    if rebuild or database_needs_rebuild():
-        created_count = transform_training_images()
+    if rebuild:
+        transformed_count = transform_training_images()
 
-        if created_count:
-            print(f"Created {created_count} transformed training images")
+        if transformed_count:
+            print(f"Updated {transformed_count} transformed training images")
 
         print("Building face embedding database...")
         return build_embeddings(app)
 
-    data = np.load(EMBEDDINGS_FILE, allow_pickle=False)
-    embeddings = data["embeddings"].astype(np.float32)
-    names = data["names"].astype(str).tolist()
-    paths = data["paths"].astype(str).tolist()
+    if database_needs_rebuild():
+        raise RuntimeError(
+            "The embedding cache is missing, stale, or invalid. "
+            "Rebuild it separately with `python main.py --rebuild --build-only`."
+        )
+
+    manifest = load_manifest()
+    if not isinstance(manifest, dict) or not _validate_embedding_cache(manifest):
+        raise RuntimeError("The face embedding cache is missing or invalid")
+
+    with np.load(EMBEDDINGS_FILE, allow_pickle=False) as data:
+        embeddings = data["embeddings"].astype(np.float32)
+        names = data["names"].astype(str).tolist()
+        paths = data["paths"].astype(str).tolist()
 
     print(f"Loaded {len(embeddings)} cached embeddings")
 

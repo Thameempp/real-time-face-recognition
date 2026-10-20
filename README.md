@@ -1,222 +1,281 @@
-# Face Recognition Project
+# Real-Time Face Recognition
 
-Webcam-based face dataset collection and live face recognition using:
+Webcam face recognition and dataset collection using local computer-vision models.
 
-- InsightFace `buffalo_s` for face embeddings
-- YOLOv8 face detection for live recognition
-- OpenCV for camera capture, display, and image augmentation
-- Multiprocessing with shared memory for smoother camera performance
+## Tools and services
 
-The project has two main workflows:
+- **Python 3.10+** runs the application and dataset collector.
+- **OpenCV** captures webcam frames, displays results, and creates image augmentations.
+- **Ultralytics YOLOv8** detects faces using the `yolov8n-face.pt` model.
+- **InsightFace `buffalo_s`** creates face embeddings for identity matching.
+- **ONNX Runtime** runs InsightFace, using CoreML, CUDA, or CPU providers when available.
+- **PyTorch** supports YOLO device selection, preferring CUDA, then Apple MPS, then CPU.
+- **NumPy** handles image and embedding arrays.
+- **YapaLab GitHub Release** supplies the default YOLO weights, downloaded automatically
+  when `models/yolov8n-face.pt` is missing. Use `--no-download` to disable this.
 
-1. Collect face crops for a person into `trained_data/`
-2. Build embeddings and run live recognition from the webcam
+## Setup
 
-## Project Structure
-
-```text
-.
-├── main.py                         # Live face recognition entry point
-├── face_reco_yolo.py               # Compatibility wrapper for main.py
-├── face_recognition.py             # Builds and loads embedding cache
-├── camera.py                       # Webcam loop for live recognition
-├── detector.py                     # YOLO detection + recognition pipeline
-├── recognizer.py                   # Face crop embedding and identity matching
-├── model_utils.py                  # Model loading, device selection, downloads
-├── drawing.py                      # Live recognition overlay drawing
-├── config.py                       # Runtime paths and recognition settings
-├── train/
-│   ├── main.py                     # Dataset collector entry point
-│   ├── train.py                    # Compatibility wrapper
-│   ├── collector.py                # Webcam collection loop
-│   ├── detector.py                 # InsightFace detection worker
-│   ├── dataset.py                  # Folder creation and image saving
-│   ├── augmentations.py            # Saved image variants
-│   ├── display.py                  # Collector overlay and controls
-│   └── config.py                   # Training settings
-├── models/
-│   └── yolov8n-face.pt             # YOLO face model
-├── trained_data/                   # Person folders and collected images
-├── face_embeddings.npz             # Cached embeddings
-└── face_embeddings_manifest.json   # Tracks images used for the cache
-```
-
-## Requirements
-
-- Python 3.10 or newer recommended
-- A working webcam
-- macOS, Linux, or Windows with OpenCV camera support
-
-Install the Python packages:
+Requirements: Python 3.10+, a working webcam, and camera permission.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install opencv-python numpy insightface onnxruntime ultralytics torch
+python3 -m pip install -r requirements.txt
 ```
 
-On Apple Silicon, the code will prefer CoreML for InsightFace when available and MPS for Torch/YOLO when available. On NVIDIA systems, it will use CUDA when the installed Torch and ONNX Runtime builds support it. Otherwise, it falls back to CPU.
+## Workflow
 
-## Collect Training Images
+### 1. Collect face images
 
-Run the collector from the project root:
+Run this from the project root:
 
 ```bash
 python3 -m train --name person_name
 ```
 
-You can also run the compatibility wrapper:
+Omit `--name` to enter the name interactively. Enroll with one person in view
+and collect real images across the listed poses, camera distances, expressions,
+and lighting conditions. The collector rejects blurry, small, or frame-edge
+faces and asks you to try again; it does not enlarge low-resolution crops.
 
-```bash
-python3 train/train.py --name person_name
-```
-
-If `--name` is omitted, the script asks for the person's name interactively.
-
-### Collector Controls
+Controls:
 
 ```text
-1 = Front
-2 = Slight left
-3 = Strong left
-4 = Slight right
-5 = Strong right
-6 = Looking up
-7 = Looking down
-S = Save current face crop
-Q = Quit
+1-7  Select pose
+s    Save the current face crop
+q    Quit
 ```
 
-Keep only one person visible while saving. Each save writes the original crop plus augmented variants under:
+Images are saved under `trained_data/person_name/` as originals plus corrected,
+dark, bright, and shadow lighting forms. The collector no longer generates
+`edges`, `grayscale`, `outline`, or `pattern` forms because the embedding
+database does not use them.
 
-```text
-trained_data/person_name/
-```
-
-The generated folders include:
-
-```text
-originals/
-corrected/
-dark/
-bright/
-shadow/
-grayscale/
-edges/
-outline/
-pattern/
-```
-
-Only these folders are used when building embeddings:
-
-```text
-originals/
-corrected/
-dark/
-bright/
-shadow/
-```
-
-## Build or Rebuild Embeddings
-
-After collecting images, rebuild the embedding cache:
+### 2. Build embeddings
 
 ```bash
 python3 main.py --rebuild --build-only
 ```
 
-This creates or updates:
+This rebuilds the cache and exits without opening the camera. It creates or
+updates:
 
 ```text
 face_embeddings.npz
 face_embeddings_manifest.json
 ```
 
-The manifest lets the app detect when training images have changed and rebuild the cache when needed.
+The manifest records the InsightFace model and version, preprocessing settings,
+embedding dimension, and a fingerprint of the enrollment files. Live recognition
+refuses a stale or invalid cache; rebuild it explicitly before starting the camera.
 
-## Run Live Recognition
+### 3. Validate and evaluate
 
-Start the webcam recognition app:
+Find exact and near-duplicate original enrollment images. The command reports
+pairs for review and does not delete images:
 
 ```bash
-python3 main.py
+python3 -m train.validate_dataset
 ```
 
-The app loads cached embeddings, starts the camera, detects faces with YOLO, embeds each detected face with InsightFace, and labels matches in the OpenCV window.
+Keep three separate, non-overlapping datasets:
 
+```text
+trained_data/       # enrollment identities
+calibration_data/   # known and unknown identities; threshold selection only
+test_data/          # held-out known and unknown identities; final report only
+```
+
+Within calibration and test, put each identity in its own subfolder. For unknown
+people, use folder names that do not occur under `trained_data/`. The evaluator
+compares original-only and selected-augmentation enrollment, top-three mean,
+maximum, and normalized prototype strategies. It selects thresholds using only
+`calibration_data/`, then reports false-accept and false-reject rates on the
+untouched `test_data/`.
+
+```bash
+python3 -m recognition.evaluation evaluate-matching \
+  --enrollment-dir trained_data \
+  --calibration-dir calibration_data \
+  --test-dir test_data
+```
+
+Benchmark warmed YOLO runs at 416, 512, and 640 on representative images:
+
+```bash
+python3 -m recognition.evaluation benchmark-yolo \
+  --image-dir benchmark_images \
+  --sizes 416 512 640 \
+  --device mps
+```
+
+The benchmark reports latency percentiles and detected-box counts. Box counts
+are not accuracy measurements; use annotated images to compare detection
+accuracy at different input sizes.
+
+Compare single-crop InsightFace calls with batched recognition-model inference
+while checking embedding agreement:
+
+```bash
+python3 -m recognition.evaluation benchmark-embeddings \
+  --image-dir trained_data \
+  --batch-size 8
+```
+
+### 4. Run recognition
+
+```bash
+python3 main.py --imgsz 512 --device mps --matching-strategy top3 --threshold 0.45
+```
+
+This faster setting suits Apple Silicon systems like the one shown in the screenshot.
+Smaller faces may be harder to detect; use `--imgsz 640` when detection of small
+or distant faces matters more. On other hardware, omit `--device mps` to let the
+application choose the available device. Set `--threshold` to a value selected
+from calibration data; `0.45` remains the default until calibration is run.
+
+The app loads the validated embedding cache, opens the webcam, and performs YOLO
+detection in a background worker. It rejects low-quality crops, reuses recent
+embeddings for stable tracks, and smooths identity decisions across observations.
 Press `q` in the camera window to quit.
 
-## Useful Runtime Options
+If `models/yolov8n-face.pt` is missing, it is downloaded automatically. Use `--no-download` to disable this.
+
+## Common options
 
 ```bash
 python3 main.py --rebuild
-python3 main.py --build-only
 python3 main.py --device cpu
 python3 main.py --device mps
 python3 main.py --device cuda
 python3 main.py --conf 0.35
-python3 main.py --imgsz 640
+python3 main.py --imgsz 960
+python3 main.py --matching-strategy max --threshold 0.50
+python3 main.py --rebuild --build-only
 python3 main.py --yolo-model models/yolov8n-face.pt
 python3 main.py --no-download
 ```
 
-Options:
+- `--rebuild`: rebuild the embedding cache and exit.
+- `--build-only`: validate the cache and exit; use `--rebuild` to regenerate it.
+- `--device`: select `cpu`, `mps`, or `cuda`.
+- `--conf`: set the YOLO confidence threshold.
+- `--matching-strategy`: choose the per-person top-three average or maximum score.
+- `--threshold`: set the minimum accepted identity similarity.
+- `--imgsz`: set the YOLO inference image size; lower values are faster, while
+  higher values can help detect smaller or more distant faces.
+- `--yolo-model`: select a YOLO model file.
 
-- `--rebuild` rebuilds the InsightFace embedding cache before running.
-- `--build-only` rebuilds or verifies embeddings and exits without opening the camera.
-- `--device` overrides automatic YOLO device selection.
-- `--conf` changes the YOLO face confidence threshold.
-- `--imgsz` changes the YOLO inference image size.
-- `--yolo-model` uses a custom YOLO face model path.
-- `--no-download` prevents automatic download of the default YOLO model.
+## Project structure
 
-If `models/yolov8n-face.pt` is missing, `main.py` downloads the default model automatically unless `--no-download` is set.
+```text
+.
+├── main.py
+├── config.py
+├── runtime_utils.py
+├── face_recognition.py
+├── recognition/
+│   ├── camera/
+│   │   ├── app.py                  # Camera and worker lifecycle
+│   │   └── loop.py                 # Live display and result freshness
+│   ├── workers/
+│   │   ├── recognition.py          # Background recognition worker
+│   │   └── buffers.py               # Latest-frame/result queue operations
+│   ├── tracking/
+│   │   ├── tracker.py              # Face tracks and identity smoothing
+│   │   └── geometry.py             # Box overlap and motion geometry
+│   ├── evaluation/                 # CLI, data, metrics, galleries, benchmarks
+│   ├── rendering/                  # Face labels and performance overlay
+│   ├── detector.py                 # YOLO detection and recognition pipeline
+│   ├── recognizer.py               # Recognition helper exports
+│   ├── face_quality.py             # Face box checks and crop preparation
+│   ├── embeddings.py               # InsightFace alignment and embedding batches
+│   ├── matching.py                 # Embedding normalization and identity matching
+│   ├── drawing.py                  # Compatibility exports for recognition drawing
+│   ├── embedding_cache.py          # Cache loading and embedding validation
+│   └── model_utils.py              # Device and model setup
+├── train/
+│   ├── collector/                  # Enrollment app, capture, and display loop
+│   ├── display/                    # Collector face drawing and status overlay
+│   ├── validation/                 # Duplicate detection helpers
+│   ├── dataset.py                  # Enrollment folder and image writing
+│   └── validate_dataset.py         # Dataset validation CLI
+├── models/yolov8n-face.pt
+├── trained_data/
+├── face_embeddings.npz
+└── face_embeddings_manifest.json
+```
+
+## Recognition flow
+
+The recognition flow starts in `main.py`. `recognition/camera/` captures frames
+and publishes the latest one through shared memory. `recognition/workers/` runs
+YOLO, quality checks, tracking, and identity matching in the background.
+`recognition/detector.py` prepares padded crops and rejects blurry, tiny, or
+frame-edge faces. Accepted crops are passed at their original resolution to
+`InsightFace buffalo_s`, which performs its own landmark alignment and
+preprocessing. The aligned crops are sent together through InsightFace's
+recognition model when the selected ONNX provider supports batching; otherwise
+it falls back to single-crop forwards. Low-resolution crops are not enlarged.
+`recognition/tracking/` reuses embeddings for stable tracks and smooths identity changes.
+`recognition/rendering/` renders labels, track IDs, and latency and freshness
+metrics.
+
+`recognition/embedding_cache.py` loads and validates the embedding cache.
+`recognition/model_utils.py` selects a Torch device and checks or downloads the
+YOLO model. Cache rebuilding is an explicit
+build-only command, separate from live recognition. `runtime_utils.py` selects
+available ONNX Runtime providers. The database is built from collected images
+by `face_recognition.py`. `recognition.evaluation` benchmarks YOLO sizes and
+compares match strategies and enrollment modes with separate calibration and
+holdout test sets.
 
 ## Configuration
 
-Main recognition settings live in `config.py`, including:
+Recognition defaults are defined in `config.py`:
 
-- Camera size and FPS
-- YOLO image size and confidence
-- InsightFace model name
-- Similarity threshold
-- Embedding cache paths
+| Setting | Default |
+| --- | --- |
+| InsightFace model | `buffalo_s` |
+| YOLO model | `models/yolov8n-face.pt` |
+| YOLO image size / confidence | `640` / `0.25` |
+| Maximum detected faces | `20` |
+| Identity similarity threshold / strategy | `0.45` / `top3` |
+| Requested camera size / frame rate | `1280×720` / `60 FPS` |
+| Display-loop FPS cap | `60 FPS` (`None` disables pacing) |
+| Recognition crop padding | At least `16 px` or `25%` of face size |
+| Minimum face side / blur variance | `48 px` / `18` |
+| Frame-edge rejection margin | `4 px` |
+| Live InsightFace detection size / threshold | `320×320` / `0.4` |
+| Track expiry / embedding refresh | `0.75 s` / `1.0 s` |
+| Maximum displayed result age | `0.75 s` |
 
-Training settings live in `train/config.py`, including:
+Dataset collection defaults are defined in `train/config.py`:
 
-- Dataset output path
-- Pose key mappings
-- Save cooldown
-- Face crop padding
-- Augmentation folder names
+| Setting | Default |
+| --- | --- |
+| Requested camera size / frame rate | `1280×720` / `60 FPS` |
+| Detection frame width | `960 px` maximum |
+| InsightFace detection size / threshold | `640×640` / `0.35` |
+| Collection crop padding | At least `60 px` or `35%` of face size |
+| Minimum enrollment face side | `96 px` |
+| Save cooldown / maximum result age | `0.5 s` / `1.0 s` |
+| Recent frames retained for matching | `12` |
 
-To store training images somewhere else, set:
+By default, training images are stored in `trained_data/` at the project root.
+Set `FACE_TRAINED_DATA_FOLDER` to use another location; both collection and
+embedding generation read this variable:
 
 ```bash
 export FACE_TRAINED_DATA_FOLDER=/path/to/trained_data
 ```
 
-Both the training and embedding-building code read this environment variable.
-
-## Troubleshooting
-
-If the camera does not open, check that no other app is using it and that your OS has granted camera permission to the terminal.
-
-If no embeddings are found, collect images first and then run:
-
-```bash
-python3 main.py --rebuild --build-only
-```
-
-If recognition labels are too strict or too loose, tune `SIMILARITY_THRESHOLD` in `config.py`.
-
-If YOLO runs slowly, try a smaller image size:
-
-```bash
-python3 main.py --imgsz 640
-```
-
-## Notes
-
-This repository currently does not include a pinned dependency file such as `requirements.txt`, so package versions are resolved by `pip` at install time. For reproducible setup across machines, add a `requirements.txt` after confirming the versions that work best on your hardware.
+`CAMERA_FPS` is the requested webcam rate, while `DISPLAY_FPS` caps how often
+the recognition window updates. The camera driver and hardware may deliver fewer
+frames than requested, so these settings cannot guarantee a particular FPS.
+The recognition worker has its own FPS and does not set the display rate.
+The overlay also reports YOLO, crop preparation, InsightFace, matching, and
+result-queue latency, plus skipped frames and inference errors. YOLO is warmed
+before recognition timing begins; InsightFace warms on a usable face when one
+is present in the initial frame.
